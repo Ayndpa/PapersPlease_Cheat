@@ -10,6 +10,8 @@ using play.day;
 using play.day.booth;
 using play.day.border;
 using play.screen;
+using play.night;
+using play.night.ent;
 using data;
 using play;
 using SNVector2 = System.Numerics.Vector2;
@@ -239,6 +241,15 @@ public class CheatManager : MonoBehaviour
         return gs.TryCast<DayScreen>();
     }
 
+    private NightScreen? GetNightScreen()
+    {
+        var game = GetGame();
+        if (game == null) return null;
+        var gs = game.gameScreen;
+        if (gs == null) return null;
+        return gs.TryCast<NightScreen>();
+    }
+
     private void CacheGameState()
     {
         try
@@ -382,10 +393,20 @@ public class CheatManager : MonoBehaviour
             _savings = 0;
             try
             {
-                var storyStateObj = day.get_storyState();
-                if (storyStateObj != null && storyStateObj.facts != null)
+                // 优先从 NightScreen（夜晚结算界面）获取 family.savings
+                var nightScreen = GetNightScreen();
+                if (nightScreen != null)
                 {
-                    _savings = storyStateObj.facts.has("savings") ? storyStateObj.facts.getValueInt("savings", null) : 0;
+                    var family = nightScreen.budgetEnt?.family;
+                    if (family?.savings != null)
+                        _savings = family.savings.get();
+                }
+                else
+                {
+                    // 白天：从 StoryState.facts 读取（通过 storyState 中存储的 savings 适配器路径）
+                    var storyStateObj = day.get_storyState();
+                    if (storyStateObj != null && storyStateObj.facts != null && storyStateObj.facts.has("savings"))
+                        _savings = storyStateObj.facts.getValueInt("savings", null);
                 }
             }
             catch (Exception ex)
@@ -568,12 +589,33 @@ public class CheatManager : MonoBehaviour
                 {
                     try
                     {
-                        var day = GetDayScreen()?.day;
-                        var storyState = day?.get_storyState();
-                        if (storyState != null && storyState.facts != null)
+                        bool done = false;
+                        // 优先通过 NightScreen.budgetEnt.family.savings.set() 修改
+                        var nightScreen = GetNightScreen();
+                        if (nightScreen != null)
                         {
-                            storyState.facts.setValueInt("savings", val);
+                            var family = nightScreen.budgetEnt?.family;
+                            if (family?.savings != null)
+                            {
+                                family.savings.set(val);
+                                done = true;
+                            }
                         }
+                        // 也尝试通过 StoryState.facts 写入（用 FactAdaptorInt 的实际 path 作为 key）
+                        if (!done)
+                        {
+                            var day = GetDayScreen()?.day;
+                            var storyState = day?.get_storyState();
+                            if (storyState != null && storyState.facts != null)
+                            {
+                                // 尝试用游戏内已有的 key（如果存在则更新，否则尝试 "savings"）
+                                string key = storyState.facts.has("savings") ? "savings" : "savings";
+                                storyState.facts.setValueInt(key, val);
+                                done = true;
+                            }
+                        }
+                        if (!done)
+                            Plugin.Log.LogWarning("SetSavings: 无法获取 NightScreen 或 StoryState，存款未修改");
                     }
                     catch (Exception ex)
                     {
