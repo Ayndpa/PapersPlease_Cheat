@@ -678,13 +678,11 @@ public class CheatManager : MonoBehaviour
             var dayScreen = GetDayScreen();
             var booth = dayScreen?.booth;
             var boothClock = booth?.boothClock;
-            if (boothClock != null && _durationInMinutes > 0)
-            {
-                double totalSeconds = _durationInMinutes * 60.0;
-                double currentTime = boothClock.time;
+            var border = dayScreen?.border;
 
-                // 计算当前时间比例并转换为 06:00 - 18:00 的小时数
-                double currentHour = 6.0 + (currentTime / totalSeconds) * 12.0;
+            if (booth != null && booth.consoleEnt != null && _durationInMinutes > 0)
+            {
+                double currentHour = booth.consoleEnt.get_hour();
                 if (currentHour < 6.0) currentHour = 6.0;
                 if (currentHour > 18.0) currentHour = 18.0;
 
@@ -692,6 +690,20 @@ public class CheatManager : MonoBehaviour
                 int displayMinute = (int)((currentHour - displayHour) * 60.0);
 
                 ImGui.Text("当前游戏时间: " + $"{displayHour:D2}:{displayMinute:D2}");
+
+                // 诊断信息
+                ImGui.Text($"[DEBUG] boothClock.time: {boothClock?.time ?? -1f:F2}");
+                ImGui.Text($"[DEBUG] boothClock.get_time(): {boothClock?.get_time() ?? -1f:F2}");
+                if (border != null && border.localClock != null)
+                {
+                    ImGui.Text($"[DEBUG] borderClock.time: {border.localClock.time:F2}");
+                    ImGui.Text($"[DEBUG] borderClock.get_time(): {border.localClock.get_time():F2}");
+                }
+                ImGui.Text($"[DEBUG] consoleEnt.get_hour(): {booth.consoleEnt.get_hour():F2}");
+                if (booth.consoleEnt.consoleClock != null)
+                {
+                    ImGui.Text($"[DEBUG] consoleClock.hour: {booth.consoleEnt.consoleClock.hour:F2}");
+                }
 
                 // 如果用户没有在拖动滑块，则让滑块跟随游戏时间自动更新
                 if (!_isDraggingSlider)
@@ -701,21 +713,30 @@ public class CheatManager : MonoBehaviour
 
                 if (ImGui.SliderFloat("滑动调整时间", ref _userSliderHour, 6.0f, 18.0f, " "))
                 {
-                    double newRatio = (_userSliderHour - 6.0) / 12.0;
-                    double newTime = newRatio * totalSeconds;
-
-                    int targetH = (int)_userSliderHour;
-                    int targetM = (int)((_userSliderHour - targetH) * 60.0);
+                    double targetHour = _userSliderHour;
+                    int targetH = (int)targetHour;
+                    int targetM = (int)((targetHour - targetH) * 60.0);
 
                     MainThreadDispatcher.Enqueue(() =>
                     {
                         try
                         {
-                            boothClock.setTime(newTime);
-                            var border = dayScreen?.border;
-                            if (border != null && border.localClock != null)
+                            if (booth.consoleEnt != null)
                             {
-                                border.localClock.setTime(newTime);
+                                booth.consoleEnt.set_hour(targetHour);
+                            }
+
+                            // 同时也更新 boothClock 和 border.localClock（如果有逻辑在使用它们）
+                            if (boothClock != null && _durationInMinutes > 0)
+                            {
+                                double totalSeconds = _durationInMinutes * 60.0;
+                                double newRatio = (targetHour - 6.0) / 12.0;
+                                double newTime = newRatio * totalSeconds;
+                                boothClock.setTime(newTime);
+                                if (border != null && border.localClock != null)
+                                {
+                                    border.localClock.setTime(newTime);
+                                }
                             }
                             ShowStatus("时间已调整为 " + $"{targetH:D2}:{targetM:D2}");
                         }
@@ -771,6 +792,11 @@ public class CheatManager : MonoBehaviour
             {
                 var dayScreen = GetDayScreen();
                 var booth = dayScreen?.booth;
+                if (booth != null && booth.consoleEnt != null)
+                {
+                    booth.consoleEnt.set_hour(targetHour);
+                }
+
                 var boothClock = booth?.boothClock;
                 if (boothClock != null && _durationInMinutes > 0)
                 {
@@ -784,11 +810,11 @@ public class CheatManager : MonoBehaviour
                     {
                         border.localClock.setTime(newTime);
                     }
-
-                    int h = (int)targetHour;
-                    int m = (int)((targetHour - h) * 60.0);
-                    ShowStatus("时间已设为 " + $"{h:D2}:{m:D2}");
                 }
+
+                int h = (int)targetHour;
+                int m = (int)((targetHour - h) * 60.0);
+                ShowStatus("时间已设为 " + $"{h:D2}:{m:D2}");
             }
             catch (Exception e)
             {
