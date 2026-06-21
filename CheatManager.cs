@@ -1,5 +1,7 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
+using HarmonyLib;
 using UnityEngine;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
@@ -37,6 +39,9 @@ public class CheatManager : MonoBehaviour
     private byte[] _citationsBuf = new byte[32];
     private byte[] _savingsBuf = new byte[32];
 
+    // --- 静态实例引用（供 Harmony 补丁访问） ---
+    public static CheatManager? Instance { get; private set; }
+
     // --- 缓存（主线程写入，渲染线程读取） ---
     private bool _inGame;
     private int _dayId;
@@ -59,7 +64,9 @@ public class CheatManager : MonoBehaviour
     private bool _unlockSpacebarHotkey;
     private bool _unlockTabHotkey;
     private bool _unlockDoubleClick;
-    private bool _unlockRulebookTabs;
+
+    // 供 Harmony 补丁读取
+    public bool UnlockDoubleClick => _unlockDoubleClick;
 
     // --- 调试辅助缓存 ---
     private HostUnity? _hostUnity;
@@ -79,11 +86,13 @@ public class CheatManager : MonoBehaviour
 
     private void OnEnable()
     {
+        Instance = this;
         DearImGuiInjection.DearImGuiInjection.Render += OnImGuiRender;
     }
 
     private void OnDisable()
     {
+        Instance = null;
         DearImGuiInjection.DearImGuiInjection.Render -= OnImGuiRender;
     }
 
@@ -110,6 +119,46 @@ public class CheatManager : MonoBehaviour
 
         // 在主线程缓存游戏状态
         CacheGameState();
+
+        // 快捷键辅助功能（实现勾选后无需重新加载即时生效）
+        if (_inGame && !ImGui.GetIO().WantTextInput)
+        {
+            // 1. 空格键 (Space) 快速开启/关闭检查模式
+            if (_unlockSpacebarHotkey && Input.GetKeyDown(KeyCode.Space))
+            {
+                try
+                {
+                    var inspectUi = GetDayScreen()?.booth?.inspectUi;
+                    if (inspectUi != null)
+                    {
+                        bool isOpen = inspectUi.get_open();
+                        inspectUi.set_open(!isOpen);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogError("Error toggling inspect UI via Space: " + ex.Message);
+                }
+            }
+
+            // 2. Tab 或 Enter 键快速弹出/收回盖章面板
+            if (_unlockTabHotkey && (Input.GetKeyDown(KeyCode.Tab) || Input.GetKeyDown(KeyCode.Return)))
+            {
+                try
+                {
+                    var stampBar = GetDayScreen()?.booth?.stampBar;
+                    if (stampBar != null)
+                    {
+                        bool isOpen = stampBar.get_open();
+                        stampBar.set_open(!isOpen);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogError("Error toggling stamp bar via Tab/Enter: " + ex.Message);
+                }
+            }
+        }
     }
 
     private void ShowStatus(string msg)
@@ -177,6 +226,9 @@ public class CheatManager : MonoBehaviour
             return null;
         }
     }
+
+    /// <summary>公开给 Harmony 补丁调用。</summary>
+    public DayScreen? GetDayScreenPublic() => GetDayScreen();
 
     private DayScreen? GetDayScreen()
     {
@@ -358,7 +410,6 @@ public class CheatManager : MonoBehaviour
                 _unlockSpacebarHotkey = storyState.hasUpgrade(Upgrade.INSPECT_HOTKEY);
                 _unlockTabHotkey = storyState.hasUpgrade(Upgrade.STAMPBAR_HOTKEY);
                 _unlockDoubleClick = storyState.hasUpgrade(Upgrade.INSPECT_DOUBLECLICK);
-                _unlockRulebookTabs = storyState.hasUpgrade(Upgrade.RULEBOOK_TABS);
             }
 
             // 当进入新关卡或跨越新的一天时，确保将时间流速和全局流速重置为默认值 1.0，防止受之前设置的影响
@@ -919,46 +970,31 @@ public class CheatManager : MonoBehaviour
         bool spaceVal = _unlockSpacebarHotkey;
         if (ImGui.Checkbox("空格键快捷键 (开启/关闭对比模式)", ref spaceVal))
         {
-            ToggleUpgrade(Upgrade.INSPECT_HOTKEY, spaceVal, "空格键快捷键");
+            _unlockSpacebarHotkey = spaceVal;
+            ApplyUpgradesState(spaceVal ? "已解锁: 空格键快捷键" : "已锁定: 空格键快捷键");
         }
 
         bool tabVal = _unlockTabHotkey;
         if (ImGui.Checkbox("Tab/Enter 快捷键 (弹出/收回盖章面板)", ref tabVal))
         {
-            ToggleUpgrade(Upgrade.STAMPBAR_HOTKEY, tabVal, "Tab/Enter 快捷键");
+            _unlockTabHotkey = tabVal;
+            ApplyUpgradesState(tabVal ? "已解锁: Tab/Enter 快捷键" : "已锁定: Tab/Enter 快捷键");
         }
 
         bool doubleClickVal = _unlockDoubleClick;
-        if (ImGui.Checkbox("鼠标双击快捷键 (自动关联对比信息)", ref doubleClickVal))
+        if (ImGui.Checkbox("鼠标双击 (自动关联对比信息，即时生效)", ref doubleClickVal))
         {
-            ToggleUpgrade(Upgrade.INSPECT_DOUBLECLICK, doubleClickVal, "双击快捷关联");
-        }
-
-        bool rulebookVal = _unlockRulebookTabs;
-        if (ImGui.Checkbox("规则书标签 (Rulebook Tabs 快速翻页)", ref rulebookVal))
-        {
-            ToggleUpgrade(Upgrade.RULEBOOK_TABS, rulebookVal, "规则书标签");
+            _unlockDoubleClick = doubleClickVal;
+            ApplyUpgradesState(doubleClickVal ? "已解锁: 鼠标双击" : "已锁定: 鼠标双击");
         }
 
         ImGui.Spacing();
         if (ImGui.Button("解锁全部升级##all_upgrades"))
         {
-            MainThreadDispatcher.Enqueue(() =>
-            {
-                try
-                {
-                    var storyState = GetDayScreen()?.day?.get_storyState();
-                    if (storyState != null)
-                    {
-                        storyState.giveUpgrade(Upgrade.INSPECT_HOTKEY);
-                        storyState.giveUpgrade(Upgrade.STAMPBAR_HOTKEY);
-                        storyState.giveUpgrade(Upgrade.INSPECT_DOUBLECLICK);
-                        storyState.giveUpgrade(Upgrade.RULEBOOK_TABS);
-                        ShowStatus("已解锁全部工作棚升级");
-                    }
-                }
-                catch (Exception e) { ShowStatus("解锁失败: " + e.Message); }
-            });
+            _unlockSpacebarHotkey = true;
+            _unlockTabHotkey = true;
+            _unlockDoubleClick = true;
+            ApplyUpgradesState("已解锁全部工作棚升级");
         }
 
         ImGui.SameLine();
@@ -969,35 +1005,86 @@ public class CheatManager : MonoBehaviour
         }
     }
 
-    private void ToggleUpgrade(Upgrade upgrade, bool enable, string displayName)
+    /// <summary>
+    /// 根据当前三个 cheat 升级标志重新构建 Game/Upgrades 事实值并写入 StoryState。
+    /// 游戏内格式："[bitmask];TAG1;TAG2;..."，bitmask 为对应值之和
+    ///   INSPECT_HOTKEY   = 1
+    ///   INSPECT_DOUBLECLICK = 2
+    ///   STAMPBAR_HOTKEY  = 8
+    /// 保留游戏正常流程中可能已存在的其他升级（RULEBOOK_TABS、BOOTH_MULTITOUCH）。
+    /// </summary>
+    private void ApplyUpgradesState(string statusMsg)
     {
+        bool wantSpace = _unlockSpacebarHotkey;
+        bool wantTab = _unlockTabHotkey;
+        bool wantDblClick = _unlockDoubleClick;
+
         MainThreadDispatcher.Enqueue(() =>
         {
             try
             {
                 var storyState = GetDayScreen()?.day?.get_storyState();
-                if (storyState != null)
+                if (storyState == null || storyState.facts == null)
                 {
-                    if (enable)
+                    ShowStatus("操作失败: StoryState 为空");
+                    return;
+                }
+
+                // 读取现有字符串，保留我们不管理的升级（如 RULEBOOK_TABS、BOOTH_MULTITOUCH）
+                var existingTags = new global::System.Collections.Generic.HashSet<string>();
+                int existingMask = 0;
+                try
+                {
+                    string existing = storyState.facts.getValueText("Game/Upgrades", "");
+                    if (!string.IsNullOrEmpty(existing))
                     {
-                        storyState.giveUpgrade(upgrade);
-                        ShowStatus("已解锁: " + displayName);
-                    }
-                    else
-                    {
-                        string tag = upgrade.getTag();
-                        // 尝试以不同的键名格式移除该事实，以锁回升级
-                        storyState.facts.facts.remove(tag);
-                        storyState.facts.facts.remove("upgrade:" + tag);
-                        storyState.facts.facts.remove("upgrade." + tag);
-                        storyState.facts.facts.remove("upgrade_" + tag);
-                        ShowStatus("已锁定: " + displayName);
+                        var parts = existing.Split(';');
+                        if (parts.Length > 0 && int.TryParse(parts[0], out int m))
+                            existingMask = m;
+                        for (int i = 1; i < parts.Length; i++)
+                            existingTags.Add(parts[i]);
                     }
                 }
+                catch { }
+
+                // 从现有 mask 中移除我们管理的三个 bit，然后按当前勾选重新加
+                const int BIT_INSPECT_HOTKEY = 1;
+                const int BIT_INSPECT_DOUBLECLICK = 2;
+                const int BIT_STAMPBAR_HOTKEY = 8;
+
+                existingMask &= ~(BIT_INSPECT_HOTKEY | BIT_INSPECT_DOUBLECLICK | BIT_STAMPBAR_HOTKEY);
+                existingTags.Remove("INSPECT_HOTKEY");
+                existingTags.Remove("INSPECT_DOUBLECLICK");
+                existingTags.Remove("STAMPBAR_HOTKEY");
+
+                if (wantSpace)      { existingMask |= BIT_INSPECT_HOTKEY;      existingTags.Add("INSPECT_HOTKEY"); }
+                if (wantDblClick)   { existingMask |= BIT_INSPECT_DOUBLECLICK; existingTags.Add("INSPECT_DOUBLECLICK"); }
+                if (wantTab)        { existingMask |= BIT_STAMPBAR_HOTKEY;     existingTags.Add("STAMPBAR_HOTKEY"); }
+
+                if (existingMask == 0 && existingTags.Count == 0)
+                {
+                    // 没有任何升级：移除该键
+                    try { storyState.facts.facts.remove("Game/Upgrades"); } catch { }
+                }
+                else
+                {
+                    // 构建字符串：mask;TAG1;TAG2;...
+                    var sb = new global::System.Text.StringBuilder();
+                    sb.Append(existingMask);
+                    foreach (var tag in existingTags)
+                    {
+                        sb.Append(';');
+                        sb.Append(tag);
+                    }
+                    storyState.facts.setValueText("Game/Upgrades", sb.ToString());
+                }
+
+                ShowStatus(statusMsg);
             }
             catch (Exception e)
             {
                 ShowStatus("操作失败: " + e.Message);
+                Plugin.Log.LogError("ApplyUpgradesState error: " + e);
             }
         });
     }
@@ -1015,7 +1102,13 @@ public class CheatManager : MonoBehaviour
                 while (keysIter.hasNext())
                 {
                     string key = keysIter.next();
-                    Plugin.Log.LogInfo("Fact Key: " + key);
+                    string valueStr = "Unknown";
+                    try { valueStr = storyState.facts.getValueText(key, "NOT_TEXT"); } catch { }
+                    if (valueStr == "NOT_TEXT")
+                    {
+                        try { valueStr = storyState.facts.getValueInt(key, -999).ToString(); } catch { }
+                    }
+                    Plugin.Log.LogInfo($"Fact Key: {key} | Value: {valueStr}");
                 }
                 Plugin.Log.LogInfo("=================================================");
             }
@@ -1097,5 +1190,45 @@ public class CheatManager : MonoBehaviour
             if (result != null) return result;
         }
         return null;
+    }
+}
+
+// ===================== Harmony 补丁：鼠标双击即时生效 =====================
+
+/// <summary>
+/// 拦截 DeskItem.react(Input)，当 CheatManager 中开启双击 cheat 且该 DeskItem
+/// 尚未被游戏绑定双击委托时，手动检测 justDoubleClicked 并触发 Booth 的双击处理逻辑。
+/// </summary>
+[HarmonyPatch(typeof(play.day.booth.DeskItem), "react")]
+public static class DeskItem_React_Patch
+{
+    [HarmonyPrefix]
+    public static void Prefix(play.day.booth.DeskItem __instance, app.ent.Input input)
+    {
+        try
+        {
+            var mgr = CheatManager.Instance;
+            if (mgr == null || !mgr.UnlockDoubleClick) return;
+
+            // 若游戏已经绑定了正常的双击委托，不干预（让游戏自己处理）
+            if (__instance.whenDoubleClicked != null) return;
+
+            // 获取主指针，检查是否刚发生双击
+            var pointer = input?.getMainPointer();
+            if (pointer == null || !pointer.justDoubleClicked) return;
+
+            // 向上找 Booth 实例，调用其双击处理方法
+            var dayScreen = mgr.GetDayScreenPublic();
+            var booth = dayScreen?.booth;
+            if (booth == null) return;
+
+            var worldPos = pointer.worldPos;
+            if (worldPos != null)
+                booth.deskItem_onDoubleClicked(worldPos);
+        }
+        catch (Exception ex)
+        {
+            BepInEx.Logging.Logger.CreateLogSource("DeskItem_React_Patch").LogError("Patch error: " + ex.Message);
+        }
     }
 }

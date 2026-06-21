@@ -1,6 +1,7 @@
 using BepInEx;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
+using HarmonyLib;
 using Il2CppInterop.Runtime.Injection;
 using UnityEngine;
 
@@ -16,6 +17,11 @@ public class Plugin : BasePlugin
     {
         Log = base.Log;
         Log.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
+
+        // 注册 Harmony 补丁（含鼠标双击即时生效补丁）
+        var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
+        harmony.PatchAll(typeof(DeskItem_React_Patch).Assembly);
+        Log.LogInfo("Harmony patches applied.");
 
         // 在 IL2CPP 中注册自定义 MonoBehaviour 类型
         ClassInjector.RegisterTypeInIl2Cpp<MainThreadDispatcher>();
