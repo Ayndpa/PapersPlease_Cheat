@@ -9,6 +9,7 @@ using play.day.booth;
 using play.day.border;
 using play.screen;
 using data;
+using play;
 using SNVector2 = System.Numerics.Vector2;
 using SNVector4 = System.Numerics.Vector4;
 
@@ -33,10 +34,13 @@ public class CheatManager : MonoBehaviour
     // --- 用户输入（byte[] 用于 ImGui InputText） ---
     private byte[] _moneyBuf = new byte[32];
     private byte[] _durationBuf = new byte[32];
+    private byte[] _citationsBuf = new byte[32];
+    private byte[] _savingsBuf = new byte[32];
 
     // --- 缓存（主线程写入，渲染线程读取） ---
     private bool _inGame;
     private int _dayId;
+    private int _savings;
     private int _bribeMoney;
     private int _numProcessedPaid;
     private int _numProcessedUnpaid;
@@ -50,6 +54,12 @@ public class CheatManager : MonoBehaviour
     private float _userSliderHour = 6.0f;
     private bool _isDraggingSlider;
     private double _durationInMinutes;
+
+    // --- 工作棚升级状态 ---
+    private bool _unlockSpacebarHotkey;
+    private bool _unlockTabHotkey;
+    private bool _unlockDoubleClick;
+    private bool _unlockRulebookTabs;
 
     // --- 调试辅助缓存 ---
     private HostUnity? _hostUnity;
@@ -317,6 +327,20 @@ public class CheatManager : MonoBehaviour
             try { _numCitations = day.get_numCitations(); } catch { }
             try { _penaltyCost = day.get_penaltyCost(); } catch { }
 
+            _savings = 0;
+            try
+            {
+                var storyStateObj = day.get_storyState();
+                if (storyStateObj != null && storyStateObj.facts != null)
+                {
+                    _savings = storyStateObj.facts.has("savings") ? storyStateObj.facts.getValueInt("savings", null) : 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError("Error fetching savings: " + ex.Message);
+            }
+
             var booth = dayScreen.booth;
             _boothLoaded = booth != null;
             if (_boothLoaded)
@@ -327,9 +351,24 @@ public class CheatManager : MonoBehaviour
             var border = dayScreen.border;
             _borderLoaded = border != null;
 
+            // 缓存工作棚升级状态
+            var storyState = day.get_storyState();
+            if (storyState != null)
+            {
+                _unlockSpacebarHotkey = storyState.hasUpgrade(Upgrade.INSPECT_HOTKEY);
+                _unlockTabHotkey = storyState.hasUpgrade(Upgrade.STAMPBAR_HOTKEY);
+                _unlockDoubleClick = storyState.hasUpgrade(Upgrade.INSPECT_DOUBLECLICK);
+                _unlockRulebookTabs = storyState.hasUpgrade(Upgrade.RULEBOOK_TABS);
+            }
+
             // 当进入新关卡或跨越新的一天时，确保将时间流速和全局流速重置为默认值 1.0，防止受之前设置的影响
             if (!wasInGame || prevDayId != _dayId)
             {
+                StringToBuf(_bribeMoney.ToString(), _moneyBuf);
+                StringToBuf(_durationInMinutes.ToString("F0"), _durationBuf);
+                StringToBuf(_numCitations.ToString(), _citationsBuf);
+                StringToBuf(_savings.ToString(), _savingsBuf);
+
                 MainThreadDispatcher.Enqueue(() =>
                 {
                     try { global::app.Clock.globalSpeed = 1.0; } catch { }
@@ -421,6 +460,12 @@ public class CheatManager : MonoBehaviour
 
             ImGui.Spacing();
 
+            // ===== 工作棚升级 =====
+            if (ImGui.CollapsingHeader("工作棚升级", ImGuiTreeNodeFlags.DefaultOpen))
+                DrawBoothUpgrades();
+
+            ImGui.Spacing();
+
             // ===== 快捷操作 =====
             if (ImGui.CollapsingHeader("快捷操作", ImGuiTreeNodeFlags.DefaultOpen))
                 DrawQuickActions();
@@ -443,6 +488,7 @@ public class CheatManager : MonoBehaviour
     private void DrawInfoPanel()
     {
         ImGui.Text("天数: " + _dayId);
+        ImGui.Text("当前存款: " + _savings);
         ImGui.Text("贿赂收入: " + _bribeMoney);
         ImGui.Text("处理旅客(付费): " + _numProcessedPaid);
         ImGui.Text("处理旅客(未付): " + _numProcessedUnpaid);
@@ -456,7 +502,39 @@ public class CheatManager : MonoBehaviour
 
     private void DrawCheatButtons()
     {
-        // -- 修改金钱 --
+        // -- 修改存款 (长期储蓄) --
+        ImGui.PushItemWidth(80);
+        ImGui.Text("修改存款:");
+        ImGui.SameLine();
+        ImGui.InputText("##savings", _savingsBuf, (uint)_savingsBuf.Length);
+        ImGui.PopItemWidth();
+        ImGui.SameLine();
+        if (ImGui.Button("设置##savings"))
+        {
+            if (int.TryParse(BufToString(_savingsBuf), out int val))
+            {
+                MainThreadDispatcher.Enqueue(() =>
+                {
+                    try
+                    {
+                        var day = GetDayScreen()?.day;
+                        var storyState = day?.get_storyState();
+                        if (storyState != null && storyState.facts != null)
+                        {
+                            storyState.facts.setValueInt("savings", val);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.LogError("Error setting savings: " + ex.Message);
+                    }
+                });
+                _savings = val;
+                ShowStatus("存款已修改为 " + val);
+            }
+        }
+
+        // -- 修改贿赂收入 --
         ImGui.PushItemWidth(80);
         ImGui.Text("贿赂收入:");
         ImGui.SameLine();
@@ -475,6 +553,73 @@ public class CheatManager : MonoBehaviour
                 _bribeMoney = val;
                 ShowStatus("贿赂收入已设为 " + val);
             }
+        }
+
+        // -- 修改罚单数 --
+        ImGui.PushItemWidth(80);
+        ImGui.Text("罚单数量:");
+        ImGui.SameLine();
+        ImGui.InputText("##citations", _citationsBuf, (uint)_citationsBuf.Length);
+        ImGui.PopItemWidth();
+        ImGui.SameLine();
+        if (ImGui.Button("设置##citations"))
+        {
+            if (int.TryParse(BufToString(_citationsBuf), out int val) && val >= 0)
+            {
+                MainThreadDispatcher.Enqueue(() =>
+                {
+                    try
+                    {
+                        var day = GetDayScreen()?.day;
+                        if (day != null && day.citations != null)
+                        {
+                            int currentCount = day.citations.length;
+                            if (val < currentCount)
+                            {
+                                for (int i = 0; i < currentCount - val; i++)
+                                {
+                                    day.citations.pop();
+                                }
+                            }
+                            else if (val > currentCount)
+                            {
+                                for (int i = 0; i < val - currentCount; i++)
+                                {
+                                    day.addCitation("作弊罚单");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.LogError("Error setting citations: " + ex.Message);
+                    }
+                });
+                _numCitations = val;
+                ShowStatus("罚单数量已设为 " + val);
+            }
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("清空##citations"))
+        {
+            MainThreadDispatcher.Enqueue(() =>
+            {
+                try
+                {
+                    var day = GetDayScreen()?.day;
+                    if (day != null && day.citations != null)
+                    {
+                        day.citations.spliceVoid(0, day.citations.length);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogError("Error clearing citations: " + ex.Message);
+                }
+            });
+            _numCitations = 0;
+            StringToBuf("0", _citationsBuf);
+            ShowStatus("已清空当日罚单");
         }
 
         // -- 设置天数时长 --
@@ -733,6 +878,129 @@ public class CheatManager : MonoBehaviour
                     catch (Exception e) { ShowStatus("操作失败: " + e.Message); }
                 });
             }
+        }
+    }
+
+    private void DrawBoothUpgrades()
+    {
+        var dayScreen = GetDayScreen();
+        if (dayScreen == null || dayScreen.day == null)
+        {
+            ImGui.TextDisabled("(游戏或存档未加载)");
+            return;
+        }
+
+        bool spaceVal = _unlockSpacebarHotkey;
+        if (ImGui.Checkbox("空格键快捷键 (开启/关闭对比模式)", ref spaceVal))
+        {
+            ToggleUpgrade(Upgrade.INSPECT_HOTKEY, spaceVal, "空格键快捷键");
+        }
+
+        bool tabVal = _unlockTabHotkey;
+        if (ImGui.Checkbox("Tab/Enter 快捷键 (弹出/收回盖章面板)", ref tabVal))
+        {
+            ToggleUpgrade(Upgrade.STAMPBAR_HOTKEY, tabVal, "Tab/Enter 快捷键");
+        }
+
+        bool doubleClickVal = _unlockDoubleClick;
+        if (ImGui.Checkbox("鼠标双击快捷键 (自动关联对比信息)", ref doubleClickVal))
+        {
+            ToggleUpgrade(Upgrade.INSPECT_DOUBLECLICK, doubleClickVal, "双击快捷关联");
+        }
+
+        bool rulebookVal = _unlockRulebookTabs;
+        if (ImGui.Checkbox("规则书标签 (Rulebook Tabs 快速翻页)", ref rulebookVal))
+        {
+            ToggleUpgrade(Upgrade.RULEBOOK_TABS, rulebookVal, "规则书标签");
+        }
+
+        ImGui.Spacing();
+        if (ImGui.Button("解锁全部升级##all_upgrades"))
+        {
+            MainThreadDispatcher.Enqueue(() =>
+            {
+                try
+                {
+                    var storyState = GetDayScreen()?.day?.get_storyState();
+                    if (storyState != null)
+                    {
+                        storyState.giveUpgrade(Upgrade.INSPECT_HOTKEY);
+                        storyState.giveUpgrade(Upgrade.STAMPBAR_HOTKEY);
+                        storyState.giveUpgrade(Upgrade.INSPECT_DOUBLECLICK);
+                        storyState.giveUpgrade(Upgrade.RULEBOOK_TABS);
+                        ShowStatus("已解锁全部工作棚升级");
+                    }
+                }
+                catch (Exception e) { ShowStatus("解锁失败: " + e.Message); }
+            });
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("输出 Fact 调试日志##debug_facts"))
+        {
+            LogAllFacts();
+            ShowStatus("Fact 状态已输出至 BepInEx 控制台/日志");
+        }
+    }
+
+    private void ToggleUpgrade(Upgrade upgrade, bool enable, string displayName)
+    {
+        MainThreadDispatcher.Enqueue(() =>
+        {
+            try
+            {
+                var storyState = GetDayScreen()?.day?.get_storyState();
+                if (storyState != null)
+                {
+                    if (enable)
+                    {
+                        storyState.giveUpgrade(upgrade);
+                        ShowStatus("已解锁: " + displayName);
+                    }
+                    else
+                    {
+                        string tag = upgrade.getTag();
+                        // 尝试以不同的键名格式移除该事实，以锁回升级
+                        storyState.facts.facts.remove(tag);
+                        storyState.facts.facts.remove("upgrade:" + tag);
+                        storyState.facts.facts.remove("upgrade." + tag);
+                        storyState.facts.facts.remove("upgrade_" + tag);
+                        ShowStatus("已锁定: " + displayName);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                ShowStatus("操作失败: " + e.Message);
+            }
+        });
+    }
+
+    private void LogAllFacts()
+    {
+        try
+        {
+            var storyState = GetDayScreen()?.day?.get_storyState();
+            if (storyState != null && storyState.facts != null && storyState.facts.facts != null)
+            {
+                var stringMap = storyState.facts.facts;
+                var keysIter = new haxe.ds._StringMap.StringMapKeyIterator(stringMap);
+                Plugin.Log.LogInfo("=== PapersPlease Cheat: StoryState Facts Dump ===");
+                while (keysIter.hasNext())
+                {
+                    string key = keysIter.next();
+                    Plugin.Log.LogInfo("Fact Key: " + key);
+                }
+                Plugin.Log.LogInfo("=================================================");
+            }
+            else
+            {
+                Plugin.Log.LogWarning("StoryState or Facts is null.");
+            }
+        }
+        catch (Exception e)
+        {
+            Plugin.Log.LogError("Error dumping facts: " + e.ToString());
         }
     }
 
