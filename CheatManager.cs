@@ -424,13 +424,17 @@ public class CheatManager : MonoBehaviour
             var border = dayScreen.border;
             _borderLoaded = border != null;
 
-            // 缓存工作棚升级状态
-            var storyState = day.get_storyState();
-            if (storyState != null)
+            // 缓存工作棚升级状态：仅在首次进入游戏或切换到新的一天时才从游戏状态初始化，
+            // 之后不再覆盖——避免用户在菜单中的勾选操作被每帧重置。
+            if (!wasInGame || prevDayId != _dayId)
             {
-                _unlockSpacebarHotkey = storyState.hasUpgrade(Upgrade.INSPECT_HOTKEY);
-                _unlockTabHotkey = storyState.hasUpgrade(Upgrade.STAMPBAR_HOTKEY);
-                _unlockDoubleClick = storyState.hasUpgrade(Upgrade.INSPECT_DOUBLECLICK);
+                var storyState = day.get_storyState();
+                if (storyState != null)
+                {
+                    _unlockSpacebarHotkey = storyState.hasUpgrade(Upgrade.INSPECT_HOTKEY);
+                    _unlockTabHotkey = storyState.hasUpgrade(Upgrade.STAMPBAR_HOTKEY);
+                    _unlockDoubleClick = storyState.hasUpgrade(Upgrade.INSPECT_DOUBLECLICK);
+                }
             }
 
             // 当进入新关卡或跨越新的一天时，确保将时间流速和全局流速重置为默认值 1.0，防止受之前设置的影响
