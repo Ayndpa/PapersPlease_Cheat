@@ -47,7 +47,7 @@ public class CheatManager : MonoBehaviour
     private bool _timeIsUp;
     private bool _boothLoaded;
     private bool _borderLoaded;
-    private float _clockTimescale;
+    private float _clockTimescale = 1.0f;
     private double _durationInMinutes;
 
     // --- 调试辅助缓存 ---
@@ -99,6 +99,9 @@ public class CheatManager : MonoBehaviour
 
         // 在主线程缓存游戏状态
         CacheGameState();
+
+        // 应用时间流速微调 (对于检查亭时钟 boothClock)
+        ApplyBoothClockTimescale();
     }
 
     private void ShowStatus(string msg)
@@ -301,6 +304,9 @@ public class CheatManager : MonoBehaviour
 
             LogDebugState();
 
+            bool wasInGame = _inGame;
+            int prevDayId = _dayId;
+
             _inGame = true;
             _dayId = day.id;
             _bribeMoney = day.bribeMoney;
@@ -322,10 +328,11 @@ public class CheatManager : MonoBehaviour
 
             var border = dayScreen.border;
             _borderLoaded = border != null;
-            if (_borderLoaded)
+
+            // 当进入新关卡或跨越新的一天时，重新应用当前流速设置，保证倍速能在重新加载后延续
+            if ((!wasInGame || prevDayId != _dayId) && !Mathf.Approximately(_clockTimescale, 1.0f))
             {
-                try { _clockTimescale = (float)global::app.Clock.globalSpeed; }
-                catch { _clockTimescale = (float)border!.localClockTimescale; }
+                SetClockTimescale(_clockTimescale);
             }
         }
         catch (Exception e)
@@ -519,8 +526,36 @@ public class CheatManager : MonoBehaviour
             return;
         }
 
-        ImGui.Text("当前时间流速: " + _clockTimescale.ToString("F1") + "x");
+        ImGui.Text("当前时间流速: " + _clockTimescale.ToString("F2") + "x");
 
+        // 减速预设
+        ImGui.Text("时间减速预设:");
+        if (ImGui.Button("极慢 (0.1x)"))
+        {
+            SetClockTimescale(0.1f);
+            ShowStatus("时间减速至 0.1x");
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("较慢 (0.2x)"))
+        {
+            SetClockTimescale(0.2f);
+            ShowStatus("时间减速至 0.2x");
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("半速 (0.5x)"))
+        {
+            SetClockTimescale(0.5f);
+            ShowStatus("时间减速至 0.5x");
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("微慢 (0.8x)"))
+        {
+            SetClockTimescale(0.8f);
+            ShowStatus("时间减速至 0.8x");
+        }
+
+        // 常规/加速预设
+        ImGui.Text("时间常规/加速预设:");
         if (ImGui.Button("暂停 (0x)"))
         {
             SetClockTimescale(0);
@@ -531,6 +566,12 @@ public class CheatManager : MonoBehaviour
         {
             SetClockTimescale(1);
             ShowStatus("时间恢复正常");
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("加速 (2x)"))
+        {
+            SetClockTimescale(2);
+            ShowStatus("时间 2x 加速");
         }
         ImGui.SameLine();
         if (ImGui.Button("加速 (3x)"))
@@ -556,6 +597,15 @@ public class CheatManager : MonoBehaviour
             SetClockTimescale(50);
             ShowStatus("时间 50x 加速");
         }
+
+        // 滑动条精细调节
+        ImGui.Spacing();
+        ImGui.Text("精细调节:");
+        float val = _clockTimescale;
+        if (ImGui.SliderFloat("流速倍率", ref val, 0.0f, 10.0f, "%.2fx"))
+        {
+            SetClockTimescale(val);
+        }
     }
 
     private void SetClockTimescale(float scale)
@@ -563,22 +613,49 @@ public class CheatManager : MonoBehaviour
         _clockTimescale = scale;
         MainThreadDispatcher.Enqueue(() =>
         {
+            // 确保恢复全局时钟速度为默认的 1.0，避免干扰输入与其它引擎时钟
             try
             {
-                global::app.Clock.globalSpeed = scale;
+                global::app.Clock.globalSpeed = 1.0;
             }
-            catch (Exception e)
-            {
-                Plugin.Log.LogError("Failed to set Clock.globalSpeed: " + e.Message);
-            }
+            catch { }
 
             try
             {
                 var border = GetDayScreen()?.border;
-                if (border != null) border.localClockTimescale = 1.0;
+                if (border != null) border.localClockTimescale = scale; // 仅调节边境时钟流速
             }
             catch { }
         });
+    }
+
+    private void ApplyBoothClockTimescale()
+    {
+        if (!_inGame) return;
+        if (Mathf.Approximately(_clockTimescale, 1.0f)) return;
+
+        try
+        {
+            var dayScreen = GetDayScreen();
+            var booth = dayScreen?.booth;
+            if (booth != null)
+            {
+                var boothClock = booth.boothClock;
+                if (boothClock != null)
+                {
+                    double dt = boothClock.dt;
+                    // 只有当 dt > 0 时才进行补偿，防止游戏暂停时无限累加或倒退
+                    if (dt > 0)
+                    {
+                        boothClock.time += (_clockTimescale - 1.0) * dt;
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Plugin.Log.LogError("Error in ApplyBoothClockTimescale: " + e.Message);
+        }
     }
 
     private void DrawQuickActions()
