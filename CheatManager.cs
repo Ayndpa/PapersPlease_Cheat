@@ -23,6 +23,8 @@ public class CheatManager : MonoBehaviour
 {
     private bool _menuOpen = true;
     private bool _firstUpdate = true;
+    private string _lastScreenType = "";
+    private bool _lastMainGameNull = true;
 
     // --- 状态文本 ---
     private string _statusText = "";
@@ -47,6 +49,20 @@ public class CheatManager : MonoBehaviour
     private bool _borderLoaded;
     private float _clockTimescale;
     private double _durationInMinutes;
+
+    // --- 调试辅助缓存 ---
+    private HostUnity? _hostUnity;
+    private bool _dbHostUnityFound = false;
+    private bool _dbHostUnityGameNull = true;
+
+    private bool _dbMainGameNull = true;
+    private string _dbMainGameType = "None";
+    private bool _dbCastGameSuccess = false;
+    private bool _dbGameScreenNull = true;
+    private string _dbGameScreenType = "None";
+    private bool _dbCastDayScreenSuccess = false;
+    private bool _dbDayNull = true;
+    private string _lastDebugStateMsg = "";
 
     public CheatManager(IntPtr ptr) : base(ptr) { }
 
@@ -114,7 +130,33 @@ public class CheatManager : MonoBehaviour
     {
         try
         {
-            var igame = global::Main.game;
+            IGame? igame = global::Main.game;
+            _dbMainGameNull = igame == null;
+
+            if (igame == null)
+            {
+                if (_hostUnity == null)
+                {
+                    _hostUnity = CustomFindObjectOfType<HostUnity>();
+                }
+
+                _dbHostUnityFound = _hostUnity != null;
+                if (_hostUnity != null)
+                {
+                    igame = _hostUnity.game;
+                    _dbHostUnityGameNull = igame == null;
+                }
+                else
+                {
+                    _dbHostUnityGameNull = true;
+                }
+            }
+            else
+            {
+                _dbHostUnityFound = false;
+                _dbHostUnityGameNull = true;
+            }
+
             if (igame == null) return null;
             return igame.TryCast<Game>();
         }
@@ -138,19 +180,126 @@ public class CheatManager : MonoBehaviour
     {
         try
         {
-            var dayScreen = GetDayScreen();
+            IGame? igame = global::Main.game;
+            _dbMainGameNull = igame == null;
+
+            if (igame == null)
+            {
+                if (_hostUnity == null)
+                {
+                    _hostUnity = CustomFindObjectOfType<HostUnity>();
+                }
+
+                _dbHostUnityFound = _hostUnity != null;
+                if (_hostUnity != null)
+                {
+                    igame = _hostUnity.game;
+                    _dbHostUnityGameNull = igame == null;
+                }
+                else
+                {
+                    _dbHostUnityGameNull = true;
+                }
+            }
+            else
+            {
+                _dbHostUnityFound = false;
+                _dbHostUnityGameNull = true;
+            }
+
+            if (igame == null)
+            {
+                _dbMainGameType = "None";
+                _dbCastGameSuccess = false;
+                _dbGameScreenNull = true;
+                _dbGameScreenType = "None";
+                _dbCastDayScreenSuccess = false;
+                _dbDayNull = true;
+
+                LogDebugState();
+
+                if (!_lastMainGameNull)
+                {
+                    _lastMainGameNull = true;
+                    Plugin.Log.LogInfo("Game instance is null");
+                }
+                _inGame = false;
+                return;
+            }
+
+            if (_lastMainGameNull)
+            {
+                _lastMainGameNull = false;
+                Plugin.Log.LogInfo("Game instance is not null");
+            }
+
+            _dbMainGameType = igame.TryCast<Il2CppSystem.Object>()?.GetIl2CppType()?.FullName ?? "Unknown";
+
+            var game = igame.TryCast<Game>();
+            _dbCastGameSuccess = game != null;
+            if (game == null)
+            {
+                _dbGameScreenNull = true;
+                _dbGameScreenType = "None";
+                _dbCastDayScreenSuccess = false;
+                _dbDayNull = true;
+
+                LogDebugState();
+
+                _inGame = false;
+                return;
+            }
+
+            var gs = game.gameScreen;
+            _dbGameScreenNull = gs == null;
+            if (gs == null)
+            {
+                _dbGameScreenType = "None";
+                _dbCastDayScreenSuccess = false;
+                _dbDayNull = true;
+
+                LogDebugState();
+
+                if (_lastScreenType != "null")
+                {
+                    _lastScreenType = "null";
+                    Plugin.Log.LogInfo("gameScreen is null");
+                }
+                _inGame = false;
+                return;
+            }
+
+            string currentScreenType = gs.GetIl2CppType().FullName;
+            _dbGameScreenType = currentScreenType;
+            if (_lastScreenType != currentScreenType)
+            {
+                _lastScreenType = currentScreenType;
+                Plugin.Log.LogInfo("gameScreen type changed to: " + currentScreenType);
+            }
+
+            var dayScreen = gs.TryCast<DayScreen>();
+            _dbCastDayScreenSuccess = dayScreen != null;
             if (dayScreen == null)
             {
+                _dbDayNull = true;
+
+                LogDebugState();
+
                 _inGame = false;
                 return;
             }
 
             var day = dayScreen.day;
+            _dbDayNull = day == null;
             if (day == null)
             {
+                LogDebugState();
+
                 _inGame = false;
                 return;
             }
+
+            LogDebugState();
 
             _inGame = true;
             _dayId = day.id;
@@ -185,6 +334,16 @@ public class CheatManager : MonoBehaviour
         }
     }
 
+    private void LogDebugState()
+    {
+        string debugStateMsg = $"MainGameNull: {_dbMainGameNull}, HostUnityFound: {_dbHostUnityFound}, HostUnityGameNull: {_dbHostUnityGameNull}, MainGameType: {_dbMainGameType}, CastGame: {_dbCastGameSuccess}, GameScreenNull: {_dbGameScreenNull}, GameScreenType: {_dbGameScreenType}, CastDayScreen: {_dbCastDayScreenSuccess}, DayNull: {_dbDayNull}";
+        if (_lastDebugStateMsg != debugStateMsg)
+        {
+            _lastDebugStateMsg = debugStateMsg;
+            Plugin.Log.LogInfo("[CheatManager State Change] " + debugStateMsg);
+        }
+    }
+
     // ===================== ImGui 渲染 =====================
 
     private void OnImGuiRender()
@@ -216,6 +375,19 @@ public class CheatManager : MonoBehaviour
             if (!_inGame)
             {
                 ImGui.Text("未在游戏中...");
+                ImGui.Spacing();
+                ImGui.Separator();
+                ImGui.Text("【系统调试信息 / Debug Info】");
+                ImGui.Text($"Main.game is null: {_dbMainGameNull}");
+                ImGui.Text($"HostUnity found: {_dbHostUnityFound}");
+                ImGui.Text($"HostUnity.game is null: {_dbHostUnityGameNull}");
+                ImGui.Text($"Resolved Game Type: {_dbMainGameType}");
+                ImGui.Text($"Cast to Game success: {_dbCastGameSuccess}");
+                ImGui.Text($"gameScreen is null: {_dbGameScreenNull}");
+                ImGui.Text($"gameScreen Type: {_dbGameScreenType}");
+                ImGui.Text($"Cast to DayScreen success: {_dbCastDayScreenSuccess}");
+                ImGui.Text($"day is null: {_dbDayNull}");
+                ImGui.Separator();
                 DrawStatusText();
                 ImGui.End();
                 return;
@@ -503,5 +675,48 @@ public class CheatManager : MonoBehaviour
         {
             // Ignore
         }
+    }
+
+    private static T? CustomFindObjectOfType<T>() where T : MonoBehaviour
+    {
+        try
+        {
+            int sceneCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
+            for (int i = 0; i < sceneCount; i++)
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                if (!scene.isLoaded) continue;
+
+                var rootObjects = scene.GetRootGameObjects();
+                foreach (var go in rootObjects)
+                {
+                    if (go == null) continue;
+                    var comp = FindComponentInHierarchy<T>(go.transform);
+                    if (comp != null) return comp;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError("Error in CustomFindObjectOfType: " + ex.Message);
+        }
+        return null;
+    }
+
+    private static T? FindComponentInHierarchy<T>(Transform trans) where T : MonoBehaviour
+    {
+        if (trans == null) return null;
+
+        var comp = trans.GetComponent<T>();
+        if (comp != null) return comp;
+
+        int childCount = trans.childCount;
+        for (int i = 0; i < childCount; i++)
+        {
+            var child = trans.GetChild(i);
+            var result = FindComponentInHierarchy<T>(child);
+            if (result != null) return result;
+        }
+        return null;
     }
 }
