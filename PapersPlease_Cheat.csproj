@@ -12,8 +12,8 @@
     <OutputPath>$(GameDir)\BepInEx\plugins\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
-    <!-- 排除反编译代码和 BepInEx 源码，只编译插件自身的 .cs -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);interop_decompiled\**;BepInEx\**</DefaultItemExcludes>
+    <!-- 排除反编译代码、BepInEx 源码和 DearImGuiInjection 源码，只编译插件自身的 .cs -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);interop_decompiled\**;BepInEx\**;DearImGuiInjection\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- BepInEx 6 核心 DLL -->
@@ -76,6 +76,18 @@
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>$(GameDir)\BepInEx\interop\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- DearImGuiInjection & ImGui.NET -->
+  <ItemGroup>
+    <Reference Include="DearImGuiInjection">
+      <HintPath>$(GameDir)\BepInEx\plugins\DearImGuiInjection\DearImGuiInjection.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ImGui.NET">
+      <HintPath>$(GameDir)\BepInEx\plugins\DearImGuiInjection\ImGui.NET.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
