@@ -324,7 +324,8 @@ public class CheatManager : MonoBehaviour
             _borderLoaded = border != null;
             if (_borderLoaded)
             {
-                _clockTimescale = (float)border!.localClockTimescale;
+                try { _clockTimescale = (float)global::app.Clock.globalSpeed; }
+                catch { _clockTimescale = (float)border!.localClockTimescale; }
             }
         }
         catch (Exception e)
@@ -562,8 +563,21 @@ public class CheatManager : MonoBehaviour
         _clockTimescale = scale;
         MainThreadDispatcher.Enqueue(() =>
         {
-            var border = GetDayScreen()?.border;
-            if (border != null) border.localClockTimescale = scale;
+            try
+            {
+                global::app.Clock.globalSpeed = scale;
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError("Failed to set Clock.globalSpeed: " + e.Message);
+            }
+
+            try
+            {
+                var border = GetDayScreen()?.border;
+                if (border != null) border.localClockTimescale = 1.0;
+            }
+            catch { }
         });
     }
 
