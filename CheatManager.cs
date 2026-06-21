@@ -47,7 +47,8 @@ public class CheatManager : MonoBehaviour
     private bool _timeIsUp;
     private bool _boothLoaded;
     private bool _borderLoaded;
-    private float _clockTimescale = 1.0f;
+    private float _userSliderHour = 6.0f;
+    private bool _isDraggingSlider;
     private double _durationInMinutes;
 
     // --- 调试辅助缓存 ---
@@ -99,9 +100,6 @@ public class CheatManager : MonoBehaviour
 
         // 在主线程缓存游戏状态
         CacheGameState();
-
-        // 应用时间流速微调 (对于检查亭时钟 boothClock)
-        ApplyBoothClockTimescale();
     }
 
     private void ShowStatus(string msg)
@@ -329,10 +327,14 @@ public class CheatManager : MonoBehaviour
             var border = dayScreen.border;
             _borderLoaded = border != null;
 
-            // 当进入新关卡或跨越新的一天时，重新应用当前流速设置，保证倍速能在重新加载后延续
-            if ((!wasInGame || prevDayId != _dayId) && !Mathf.Approximately(_clockTimescale, 1.0f))
+            // 当进入新关卡或跨越新的一天时，确保将时间流速和全局流速重置为默认值 1.0，防止受之前设置的影响
+            if (!wasInGame || prevDayId != _dayId)
             {
-                SetClockTimescale(_clockTimescale);
+                MainThreadDispatcher.Enqueue(() =>
+                {
+                    try { global::app.Clock.globalSpeed = 1.0; } catch { }
+                    try { if (border != null) border.localClockTimescale = 1.0; } catch { }
+                });
             }
         }
         catch (Exception e)
@@ -520,142 +522,134 @@ public class CheatManager : MonoBehaviour
 
     private void DrawTimeControls()
     {
-        if (!_borderLoaded)
+        if (!_boothLoaded)
         {
-            ImGui.TextDisabled("(边境未加载)");
+            ImGui.TextDisabled("(检查亭未加载)");
             return;
         }
-
-        ImGui.Text("当前时间流速: " + _clockTimescale.ToString("F2") + "x");
-
-        // 减速预设
-        ImGui.Text("时间减速预设:");
-        if (ImGui.Button("极慢 (0.1x)"))
-        {
-            SetClockTimescale(0.1f);
-            ShowStatus("时间减速至 0.1x");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("较慢 (0.2x)"))
-        {
-            SetClockTimescale(0.2f);
-            ShowStatus("时间减速至 0.2x");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("半速 (0.5x)"))
-        {
-            SetClockTimescale(0.5f);
-            ShowStatus("时间减速至 0.5x");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("微慢 (0.8x)"))
-        {
-            SetClockTimescale(0.8f);
-            ShowStatus("时间减速至 0.8x");
-        }
-
-        // 常规/加速预设
-        ImGui.Text("时间常规/加速预设:");
-        if (ImGui.Button("暂停 (0x)"))
-        {
-            SetClockTimescale(0);
-            ShowStatus("时间已暂停");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("正常 (1x)"))
-        {
-            SetClockTimescale(1);
-            ShowStatus("时间恢复正常");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("加速 (2x)"))
-        {
-            SetClockTimescale(2);
-            ShowStatus("时间 2x 加速");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("加速 (3x)"))
-        {
-            SetClockTimescale(3);
-            ShowStatus("时间 3x 加速");
-        }
-
-        if (ImGui.Button("5x"))
-        {
-            SetClockTimescale(5);
-            ShowStatus("时间 5x 加速");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("10x"))
-        {
-            SetClockTimescale(10);
-            ShowStatus("时间 10x 加速");
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("50x"))
-        {
-            SetClockTimescale(50);
-            ShowStatus("时间 50x 加速");
-        }
-
-        // 滑动条精细调节
-        ImGui.Spacing();
-        ImGui.Text("精细调节:");
-        float val = _clockTimescale;
-        if (ImGui.SliderFloat("流速倍率", ref val, 0.0f, 10.0f, "%.2fx"))
-        {
-            SetClockTimescale(val);
-        }
-    }
-
-    private void SetClockTimescale(float scale)
-    {
-        _clockTimescale = scale;
-        MainThreadDispatcher.Enqueue(() =>
-        {
-            // 确保恢复全局时钟速度为默认的 1.0，避免干扰输入与其它引擎时钟
-            try
-            {
-                global::app.Clock.globalSpeed = 1.0;
-            }
-            catch { }
-
-            try
-            {
-                var border = GetDayScreen()?.border;
-                if (border != null) border.localClockTimescale = scale; // 仅调节边境时钟流速
-            }
-            catch { }
-        });
-    }
-
-    private void ApplyBoothClockTimescale()
-    {
-        if (!_inGame) return;
-        if (Mathf.Approximately(_clockTimescale, 1.0f)) return;
 
         try
         {
             var dayScreen = GetDayScreen();
             var booth = dayScreen?.booth;
-            if (booth != null)
+            var boothClock = booth?.boothClock;
+            if (boothClock != null && _durationInMinutes > 0)
             {
-                var boothClock = booth.boothClock;
-                if (boothClock != null)
+                double totalSeconds = _durationInMinutes * 60.0;
+                double currentTime = boothClock.time;
+
+                // 计算当前时间比例并转换为 06:00 - 18:00 的小时数
+                double currentHour = 6.0 + (currentTime / totalSeconds) * 12.0;
+                if (currentHour < 6.0) currentHour = 6.0;
+                if (currentHour > 18.0) currentHour = 18.0;
+
+                int displayHour = (int)currentHour;
+                int displayMinute = (int)((currentHour - displayHour) * 60.0);
+
+                ImGui.Text("当前游戏时间: " + $"{displayHour:D2}:{displayMinute:D2}");
+
+                // 如果用户没有在拖动滑块，则让滑块跟随游戏时间自动更新
+                if (!_isDraggingSlider)
                 {
-                    double dt = boothClock.dt;
-                    // 只有当 dt > 0 时才进行补偿，防止游戏暂停时无限累加或倒退
-                    if (dt > 0)
-                    {
-                        boothClock.time += (_clockTimescale - 1.0) * dt;
-                    }
+                    _userSliderHour = (float)currentHour;
                 }
+
+                if (ImGui.SliderFloat("滑动调整时间", ref _userSliderHour, 6.0f, 18.0f, " "))
+                {
+                    double newRatio = (_userSliderHour - 6.0) / 12.0;
+                    double newTime = newRatio * totalSeconds;
+
+                    int targetH = (int)_userSliderHour;
+                    int targetM = (int)((_userSliderHour - targetH) * 60.0);
+
+                    MainThreadDispatcher.Enqueue(() =>
+                    {
+                        try
+                        {
+                            boothClock.setTime(newTime);
+                            var border = dayScreen?.border;
+                            if (border != null && border.localClock != null)
+                            {
+                                border.localClock.setTime(newTime);
+                            }
+                            ShowStatus("时间已调整为 " + $"{targetH:D2}:{targetM:D2}");
+                        }
+                        catch (Exception e)
+                        {
+                            Plugin.Log.LogError("Error setting time: " + e.Message);
+                        }
+                    });
+                }
+
+                // 更新拖动状态
+                _isDraggingSlider = ImGui.IsItemActive();
+
+                // 快捷设定按钮
+                ImGui.Text("快捷设定:");
+                if (ImGui.Button("设为早上 (08:00)"))
+                {
+                    SetGameTime(8.0);
+                }
+                ImGui.SameLine();
+                if (ImGui.Button("设为中午 (12:00)"))
+                {
+                    SetGameTime(12.0);
+                }
+                ImGui.SameLine();
+                if (ImGui.Button("设为下午 (15:00)"))
+                {
+                    SetGameTime(15.0);
+                }
+                ImGui.SameLine();
+                if (ImGui.Button("设为下班前 (17:50)"))
+                {
+                    SetGameTime(17.833); // 17 + 50/60
+                }
+            }
+            else
+            {
+                ImGui.TextDisabled("(时钟不可用)");
             }
         }
         catch (Exception e)
         {
-            Plugin.Log.LogError("Error in ApplyBoothClockTimescale: " + e.Message);
+            ImGui.TextDisabled("(时间控制加载失败)");
+            Plugin.Log.LogError("Error in DrawTimeControls: " + e.Message);
         }
+    }
+
+    private void SetGameTime(double targetHour)
+    {
+        MainThreadDispatcher.Enqueue(() =>
+        {
+            try
+            {
+                var dayScreen = GetDayScreen();
+                var booth = dayScreen?.booth;
+                var boothClock = booth?.boothClock;
+                if (boothClock != null && _durationInMinutes > 0)
+                {
+                    double totalSeconds = _durationInMinutes * 60.0;
+                    double newRatio = (targetHour - 6.0) / 12.0;
+                    double newTime = newRatio * totalSeconds;
+
+                    boothClock.setTime(newTime);
+                    var border = dayScreen?.border;
+                    if (border != null && border.localClock != null)
+                    {
+                        border.localClock.setTime(newTime);
+                    }
+
+                    int h = (int)targetHour;
+                    int m = (int)((targetHour - h) * 60.0);
+                    ShowStatus("时间已设为 " + $"{h:D2}:{m:D2}");
+                }
+            }
+            catch (Exception e)
+            {
+                ShowStatus("设定失败: " + e.Message);
+            }
+        });
     }
 
     private void DrawQuickActions()
